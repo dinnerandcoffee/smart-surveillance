@@ -93,3 +93,121 @@
 ## 7. 결론
 
 본 프로젝트는 딥러닝 기반 객체 탐지 기술을 활용하여, 기존 CCTV의 한계를 보완하는 **지능형 안전 관리 시스템**을 구현하는 것을 목표로 한다. 제한된 인원과 자원 내에서 실현 가능한 구조를 바탕으로, 실제 현장에서 활용 가능한 응급·비상 상황 감지 시스템의 가능성을 확인하고자 한다.
+
+------------------------------------------------------------------------
+
+## 8. UDP 영상 전송 (송신/수신) 사용 예시
+
+관리 서버(웹캠 송신):
+
+```bash
+python face_id_app/udp_video_sender.py \
+  --targets 192.168.0.10:5000,192.168.0.11:5000 \
+  --source 0 \
+  --jpeg-quality 80
+```
+
+AI 서버 A (YOLO Detect):
+
+```bash
+python face_id_app/udp_video_receiver.py \
+  --port 5000 \
+  --task detect \
+  --show
+```
+
+AI 서버 B (YOLO Pose):
+
+```bash
+python face_id_app/udp_video_receiver.py \
+  --port 5000 \
+  --task pose \
+  --show
+```
+
+관리 서버(추론 결과 로그 수신):
+
+```bash
+python face_id_app/udp_event_logger.py \
+  --port 6000
+```
+
+AI 서버에서 추론 결과를 관리 서버로 회신:
+
+```bash
+python face_id_app/udp_video_receiver.py \
+  --port 5000 \
+  --task detect \
+  --report-target 192.168.0.2:6000 \
+  --source-id ai-a
+```
+
+### 옵션 설명
+
+송신(`face_id_app/udp_video_sender.py`):
+
+- `--targets`: 수신 서버 목록. `host:port`를 콤마로 나열
+- `--source`: 카메라 인덱스 또는 영상 파일 경로 (기본 `0`)
+- `--jpeg-quality`: JPEG 압축 품질(1~100) (기본 `80`)
+- `--max-datagram`: UDP 패킷 최대 크기(바이트) (기본 `1400`)
+- `--fps`: 송신 FPS 제한. `0`이면 제한 없음
+
+수신(`face_id_app/udp_video_receiver.py`):
+
+- `--bind`: 바인딩 주소 (기본 `0.0.0.0`)
+- `--port`: 수신 포트 (필수)
+- `--task`: `detect` 또는 `pose`
+- `--model`: YOLO 모델 경로(선택). 없으면 기본 모델 사용
+- `--frame-timeout`: 조각 재조립 타임아웃(초) (기본 `0.5`)
+- `--report-target`: 추론 결과를 보낼 관리 서버 `host:port`
+- `--report-threshold`: 회신할 최소 confidence (기본 `0.5`)
+- `--report-classes`: 회신할 클래스 이름(콤마 구분)
+- `--report-include-keypoints`: 포즈 키포인트 포함 (pose 전용)
+- `--source-id`: AI 서버 식별자
+- `--show`: 프레임 창 표시 여부
+
+추론 결과 로그 수신(`face_id_app/udp_event_logger.py`):
+
+- `--bind`: 바인딩 주소 (기본 `0.0.0.0`)
+- `--port`: 수신 포트 (필수)
+- `--db-host`: DB 호스트 (기본 `localhost`)
+- `--db-user`: DB 사용자 (기본 `root`)
+- `--db-password`: DB 비밀번호 (기본 `1234`)
+- `--db-name`: DB 이름 (기본 `face_id`)
+
+로그는 `ai_event_logs` 테이블에 저장된다.
+
+### AI 이벤트 포맷 규칙
+
+AI 서버는 아래 JSON 포맷으로 관리 서버에 UDP 이벤트를 회신한다.
+
+```json
+{
+  "task": "detect",
+  "source_id": "ai-a",
+  "timestamp": 1735039999.123,
+  "events": [
+    {
+      "label": "fire",
+      "score": 0.91,
+      "bbox": [10.0, 12.0, 120.0, 160.0]
+    }
+  ]
+}
+```
+
+필드 정의:
+
+- `task`: `detect` 또는 `pose`
+- `source_id`: AI 서버 식별자 (예: `ai-a`, `ai-b`)
+- `timestamp`: 이벤트 발생 시각 (epoch seconds)
+- `events`: 이벤트 배열
+  - `label`: 감지 라벨 (예: `fire`, `smoke`, `fall`)
+  - `score`: confidence (0~1)
+  - `bbox`: `xyxy` 좌표 (pose에서 박스가 없으면 생략 가능)
+  - `keypoints`: pose에서만 사용 (각 포인트는 `[x, y, conf]`)
+
+매핑 원칙:
+
+- YOLO Detect: `label`/`score`/`bbox`를 그대로 매핑
+- YOLO Pose: `keypoints`를 포함하고, 낙상 판정은 별도 룰/모델로 `label: fall` 이벤트로 생성
